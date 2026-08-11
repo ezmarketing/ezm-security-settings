@@ -16,6 +16,9 @@ $ezm_security_update_checker = PucFactory::buildUpdateChecker(
 	'ezm-security-settings'
 );
 
+// Prefer the zip attached to the GitHub Release (browser-friendly publish path).
+$ezm_security_update_checker->getVcsApi()->enableReleaseAssets();
+
 /**
  * Obscure only credential errors that enable username enumeration.
  * Keeps other login errors (reCAPTCHA, empty fields, etc.) intact.
