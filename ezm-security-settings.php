@@ -2,7 +2,7 @@
 /*
 Plugin Name: EZM WP Security Features
 Description: Additional security for WP users
-Version: 1.1
+Version: 1.1.1
 Author: EZMarketing
 */
 
@@ -19,37 +19,102 @@ $ezm_security_update_checker = PucFactory::buildUpdateChecker(
 // Prefer the zip attached to the GitHub Release (browser-friendly publish path).
 $ezm_security_update_checker->getVcsApi()->enableReleaseAssets();
 
+// Hide the "Check for updates" plugin-row link (automatic checks still run).
+add_filter( 'puc_manual_check_link-ezm-security-settings', '__return_empty_string' );
+
 /**
- * Obscure only credential errors that enable username enumeration.
- * Keeps other login errors (reCAPTCHA, empty fields, etc.) intact.
+ * Credential errors that reveal whether a username or email exists.
+ *
+ * @return string[]
+ */
+function ezm_security_enumeration_codes() {
+	return array(
+		'incorrect_password',
+		'invalid_username',
+		'invalid_email',
+	);
+}
+
+/**
+ * Generic login failure. Same text for a bad password and an unknown account.
+ *
+ * @return string
+ */
+function ezm_security_generic_login_message() {
+	return '<strong>' . esc_html__( 'Error:', 'ez-theme-function' ) . '</strong> ' . esc_html__( 'Invalid login credentials.', 'ez-theme-function' );
+}
+
+/**
+ * Replace enumeration errors on the WP_Error, and keep unrelated codes.
+ *
+ * @param WP_Error $errors Login errors.
+ * @return WP_Error
+ */
+function ezm_security_obscure_login_error_codes( $errors ) {
+	$matched = array_intersect( ezm_security_enumeration_codes(), $errors->get_error_codes() );
+	if ( empty( $matched ) ) {
+		return $errors;
+	}
+
+	$generic = new WP_Error( 'invalid_login', ezm_security_generic_login_message() );
+	foreach ( $errors->get_error_codes() as $code ) {
+		if ( in_array( $code, $matched, true ) ) {
+			continue;
+		}
+		foreach ( $errors->get_error_messages( $code ) as $message ) {
+			$generic->add( $code, $message );
+		}
+	}
+
+	return $generic;
+}
+
+/**
+ * WooCommerce My Account calls wp_signon() and prints get_error_message().
+ * That path never applies wp_login_errors, so a wrong password still names the account.
+ */
+add_filter( 'authenticate', function( $user ) {
+	if ( ! is_wp_error( $user ) ) {
+		return $user;
+	}
+
+	return ezm_security_obscure_login_error_codes( $user );
+}, 100 );
+
+/**
+ * wp-login.php applies this to the error object before render.
  */
 add_filter( 'wp_login_errors', function( $errors ) {
 	if ( ! is_wp_error( $errors ) ) {
 		return $errors;
 	}
 
-	// These codes reveal whether a username/email exists.
-	$enumeration_codes = array(
-		'incorrect_password',
-		'invalid_username',
-		'invalid_email',
-	);
+	return ezm_security_obscure_login_error_codes( $errors );
+} );
 
-	$matched = array_intersect( $enumeration_codes, $errors->get_error_codes() );
-	if ( empty( $matched ) ) {
-		return $errors;
+/**
+ * WooCommerce also passes the message string through login_errors.
+ * Recaptcha, empty fields, and cookie errors do not match these phrases.
+ */
+add_filter( 'login_errors', function( $error ) {
+	if ( ! is_string( $error ) || '' === $error ) {
+		return $error;
 	}
 
-	foreach ( $matched as $code ) {
-		$errors->remove( $code );
-	}
-
-	$errors->add(
-		'invalid_login',
-		__( 'Invalid login credentials.', 'ez-theme-function' )
+	$leaks = array(
+		'The password you entered for the',
+		'is not registered on this site',
+		'Unknown email address',
+		'Unknown username',
 	);
 
-	return $errors;
+	foreach ( $leaks as $leak ) {
+		if ( false !== strpos( $error, $leak ) ) {
+			return ezm_security_generic_login_message();
+		}
+	}
+
+	return $error;
 } );
 
 // Restrict API access
